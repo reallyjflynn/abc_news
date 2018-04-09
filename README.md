@@ -1,4 +1,4 @@
-# abc_news
+# ABC News Australia Headline Analysis
 Exploratory Analysis of Kaggle Data https://www.kaggle.com/therohk/million-headlines/
 
 
