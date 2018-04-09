@@ -1,0 +1,231 @@
+---
+title: "ABC"
+author: "J Flynn"
+date: "09/04/2018"
+output: github_document
+---
+
+Text Analysis using data from 'A Million News Headlines'
+https://www.kaggle.com/therohk/million-headlines
+
+# Context
+
+This contains data of news headlines published over a period of 15 years. From the reputable Australian news source ABC (Australian Broadcasting Corp.)
+
+Site: http://www.abc.net.au/
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+library(tidytext)
+library(tidyverse)
+library(lubridate)
+library(quanteda)
+library(knitr)
+library(scales)
+library(irlba)
+library(widyr)
+library(stm)
+library(tibble)
+library(broom)
+
+source('../src/graphing.R')
+source('../src/word_vec.R')
+
+temp <- read_csv('../data/abcnews-date-text.csv')
+
+temp <- temp %>%
+    mutate(date = as.Date(as.character(publish_date), format = '%Y%m%d'),
+           w_day = wday(date, label = TRUE),
+           id = row_number())
+
+local_stops <- tibble(
+    word = c(
+    '2018', '2017', '2016', '2015', '2014', '2013',
+    '2012', '2011', '2010', '2009', '2008', '2007', 
+    '2006', '2005', '2004', '2003', '2002', '2001'
+    ))
+
+tidy_df <- temp %>%
+    unnest_tokens(word, headline_text) %>%
+    anti_join(stop_words) %>%
+    anti_join(local_stops) %>%
+    mutate(year = year(date),
+           month = month(date))
+    
+#test <- temp %>%
+#    filter(id == '678261')
+
+```
+
+### Stories Per Day
+
+How many stories are published by ABC News Australia per day?
+- I didn't expect to find anything that new here. I really just wanted to see how complete the data set is.
+
+Its difficult to see how meaningful the downward trend in storylines is. But we can see that Weekends generate considerably fewer stories.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+temp %>%
+    group_by(date, w_day) %>%
+    summarise(count = n()) %>%
+    ggplot(aes(date, count, color = w_day)) +
+    geom_smooth(alpha = .5, fill = NA) +
+    theme_minimal() +
+    labs(title = 'Stories Per Day', 
+         x = '', y = 'Count of Stories',
+         color = 'Days') +
+    scale_y_continuous(limits = c(0, 350))
+
+```
+
+### Most Common Words
+
+What are the most common words used in ABC headlines?
+Here we just taken a straight count of the words.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+tidy_df %>%
+    count(word, sort = TRUE)
+
+```
+
+
+### Tracking Occurences
+
+So we know which words occur the most. Are there seasonal trends to these occurences?
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+graph_occurence('water', tidy_df)
+graph_occurence('fire', tidy_df)
+graph_occurence('govt', tidy_df)
+
+```
+
+
+### TF IDF Over Time
+
+We've seen overall counts of words above. Let's now look at how common words are using TF-IDF and breaking out the numbers by year. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height=10}
+
+tidy_df_idf <- tidy_df %>%
+    mutate(year = year(date)) %>%
+    count(year, word, sort = TRUE) %>%
+    bind_tf_idf(word, year, n) %>%
+    arrange(-tf_idf) %>%
+    group_by(year) %>%
+    top_n(10) %>%
+    ungroup()
+
+tidy_df_idf %>%
+    mutate(word = factor(word),
+        word = fct_reorder(word, tf_idf)) %>%
+    filter(year > 2010) %>%
+    ggplot(aes(word, tf_idf, fill = year)) +
+    geom_col(alpha = 0.8, show.legend = FALSE) +
+    facet_wrap(~ year, scales = "free", ncol = 3) +
+    coord_flip() +
+    theme_minimal() +
+    labs(x = NULL, y = "tf-idf",
+         title = "Highest tf-idf words in ABC News Headline",
+         subtitle = "Examining headlines since 2010") +
+    scale_y_continuous(labels = comma)
+
+
+```
+
+### Word Vector
+
+We've now got a pretty good idea of how common certain words are, or at least we have a few really nice methods for looking at this. 
+
+Lets now build up a method for looking at which words are most associated.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+# We want to look at the probability of any
+# word occuring near another word. 
+# useing a skipgram of 6, as it's the average headline length
+
+
+#  Lets get a probabiliity of a word being in a title
+unigram_probs <- get_uni_p(temp)
+
+# Lets now get a Pr() of words occuring
+# near one another
+tidy_skipgrams <- get_skipgram_p(temp)
+
+# And we now want to normalise this data
+# by combining the Pr() of a word occuring
+# in the first place
+skipgram_probs <- tidy_skipgrams %>%
+    pairwise_count(word, skipgramID, 
+                   diag = TRUE, sort = TRUE) %>%
+    mutate(p = n / sum(n)) %>%
+    rename(word1 = item1, word2 = item2) %>%
+    left_join(unigram_probs %>%
+                  select(word1 = word, p1 = p),
+              by = "word1") %>%
+    left_join(unigram_probs %>%
+                  select(word2 = word, p2 = p),
+              by = "word2") %>%
+    mutate(p_together = p / p1 / p2)
+
+
+word_vectors <- get_word_vec(skipgram_probs)
+
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+t <- search_synonyms(word_vectors, word_vectors["police",]) %>%
+    mutate(token = fct_reorder(token, similarity))
+
+ggplot(t, aes(token, similarity)) +
+    geom_histogram(stat = 'identity', 
+                   alpha = .8,
+                   fill = "#36BEEE") +
+    theme_minimal() +
+    coord_flip() +
+    labs(title = 'Word Associations',
+         subtitle = paste0('Terms most associated with ',
+                           'Police'),
+         y = 'Similarity', x = '')
+
+
+search_synonyms(word_vectors, word_vectors["water",]) %>%
+    mutate(token = fct_reorder(token, similarity)) %>%
+    ggplot(aes(token, similarity)) +
+    geom_histogram(stat = 'identity', 
+                   alpha = .8,
+                   fill = "#36BEEE") +
+    theme_minimal() +
+    coord_flip() +
+    labs(title = 'Word Associations',
+         subtitle = paste0('Terms most associated with ',
+                           'Water'),
+         y = 'Similarity', x = '')
+
+search_synonyms(word_vectors, word_vectors["fire",]) %>%
+    mutate(token = fct_reorder(token, similarity)) %>%
+    ggplot(aes(token, similarity)) +
+    geom_histogram(stat = 'identity', 
+                   alpha = .8,
+                   fill = "#36BEEE") +
+    theme_minimal() +
+    coord_flip() +
+    labs(title = 'Word Associations',
+         subtitle = paste0('Terms most associated with ',
+                           'Fire'),
+         y = 'Similarity', x = '')
+
+```
+
